@@ -1,4 +1,4 @@
-# Video Lecture Analyzer
+# Enhancing Accessibility
 
 ## Overview
 Video Lecture Analyzer is a Python-based tool that automatically processes educational video content, extracting both text and visual elements to create comprehensive lecture analysis reports. The tool uses OCR (Optical Character Recognition), image processing, and AI-powered analysis to generate detailed documentation of lecture content.
