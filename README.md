@@ -95,9 +95,6 @@ The tool generates:
 ## Contributing
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-## License
-This project is licensed under the MIT License - see the LICENSE file for details.
-
 ## Acknowledgments
 - Tesseract OCR for text extraction
 - OpenCV for image processing
