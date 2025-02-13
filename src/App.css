@@ -1,0 +1,194 @@
+/* App.css */
+/* Basic Reset */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: "Inter", sans-serif; /* Modern, clean font */
+    background: #f4f7f6; /* Light background */
+    color: #333;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    padding: 20px;
+  }
+
+  .container {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    padding: 30px;
+    width: 100%;
+    max-width: 600px; /* Slightly smaller max-width */
+    text-align: center;
+    transition: all 0.3s ease;
+  }
+
+  .title {
+    font-size: 2.5rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: #2c3e50; /* Darker title color */
+  }
+
+  .subtitle {
+    color: #7f8c8d;
+    margin-bottom: 2rem;
+    font-size: 1.1rem;
+  }
+
+  .drag-drop-area {
+    width: 100%;
+    height: 200px;
+    border: 2px dashed #7f8c8d;
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column; /* Stack icon and text vertically */
+    justify-content: center;
+    align-items: center;
+    background-color: #f9f9f9;
+    color: #7f8c8d;
+    font-size: 1rem;
+    font-weight: 500;
+    transition: all 0.3s ease;
+    cursor: pointer;
+    margin-bottom: 20px;
+  }
+
+  .drag-drop-area.dragging {
+    background-color: #eaf2ff;
+    border-color: #2980b9;
+  }
+
+  .drag-drop-area.uploaded {
+    border: 2px solid #2ecc71; /* Green border for uploaded */
+    background-color: #f0fff5; /* Light green background */
+  }
+
+  .upload-icon {
+    font-size: 3rem;
+    color: #3498db;
+    margin-bottom: 10px; /* Spacing between icon and text */
+  }
+  .success-icon {
+    font-size: 3rem;
+    color: #2ecc71;
+     margin-bottom: 10px; /* Spacing between icon and text */
+
+  }
+  .drag-drop-text{
+    font-size: 1rem;
+    color:#7f8c8d;
+  }
+.file-name{
+    font-size: 1rem;
+    color:#7f8c8d;
+}
+  .input-group {
+    display: flex;
+    flex-direction: column; /* Stack inputs vertically */
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+
+  .input-box {
+    width: 100%;
+    padding: 12px 16px;
+    border: 1px solid #ced4da;
+    border-radius: 8px;
+    font-size: 1rem;
+    outline: none;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+  }
+
+  .input-box:focus {
+    border-color: #3498db;
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
+  }
+
+  .button {
+    padding: 12px 24px;
+    background-color: #3498db;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.3s ease, transform 0.2s ease;
+    margin-top: 1rem; /*Consistent space*/
+  }
+
+  .button:hover {
+    background-color: #2980b9;
+  }
+  .button:active {
+    transform: scale(0.98); /* Slight scale on press */
+  }
+  .loader {
+    border: 4px solid rgba(0, 0, 0, 0.1);
+    border-left-color: #3498db;
+    border-radius: 50%;
+    width: 30px;
+    height: 30px;
+    animation: spin 1s linear infinite;
+    margin: 20px auto; /* Center the loader */
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .error-message {
+    color: #e74c3c; /* Red color for errors */
+    background-color: #fde8e7; /* Light red background */
+    border: 1px solid #e74c3c;
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px; /* Space between icon and text */
+    font-size: 0.9rem;
+  }
+
+.download-section {
+    margin-top: 1.5rem; /* Add some spacing */
+    text-align: center;
+}
+
+.download-button {
+    display: inline-block;
+    padding: 10px 20px;
+    background-color: #2ecc71; /* Green button */
+    color: white;
+    text-decoration: none; /* Remove underline */
+    border-radius: 8px;
+    font-weight: 500;
+    transition: background-color 0.3s ease;
+}
+
+.download-button:hover {
+    background-color: #27ae60;
+}
+@keyframes successAnimation {
+  0% {
+    transform: scale(0.8);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.success-animation {
+  animation: successAnimation 0.5s ease-out;
+}
