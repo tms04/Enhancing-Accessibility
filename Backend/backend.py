@@ -9,21 +9,138 @@ from docx.shared import Inches
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from scipy.spatial.distance import cosine
-from groq import Groq
-import io
 from PIL import Image
 from flask import Flask, request, send_file, jsonify, after_this_request
 from flask_cors import CORS
+import io
+import base64
+import google.generativeai as genai
 
 app = Flask(__name__)
 CORS(app)
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-OUTPUT_WORD_FILE = "lecture_analysis.docx"
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"  # Or your path
+OUTPUT_WORD_FILE = "lecture_analysis_gemini.docx"
 IMAGE_OUTPUT_DIR = "extracted_images"
 MAX_WORKERS = 4
 TEXT_SIMILARITY_THRESHOLD = 0.7
 IMAGE_SIMILARITY_THRESHOLD = 0.95
+MIN_CHANGE_THRESHOLD = 0.2  # Threshold for considering a change (adjust as needed)
+GEMINI_API_KEY = gemini_api_key  # Replace with your Gemini API key
+GENAI_MODEL_NAME = "gemini-1.5-flash"  # Updated model name
+
+try:
+    genai.configure(api_key=GEMINI_API_KEY)
+    gemini_model = genai.GenerativeModel(GENAI_MODEL_NAME)
+except Exception as e:
+    print(f"Error configuring Gemini API: {e}")
+    gemini_model = None
+
+def preprocess_image_for_handwriting(image_path):
+    try:
+        img = cv2.imread(image_path)
+        if img is None:
+            return None
+
+        preprocessed_versions = []
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        thresh1 = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, 11, 2
+        )
+        kernel = np.ones((2,2), np.uint8)
+        eroded1 = cv2.erode(thresh1, kernel, iterations=1)
+        path1 = f"{image_path}_prep_v1.png"
+        cv2.imwrite(path1, eroded1)
+        preprocessed_versions.append(path1)
+
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        gray2 = clahe.apply(gray)
+        thresh2 = cv2.threshold(gray2, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        path2 = f"{image_path}_prep_v2.png"
+        cv2.imwrite(path2, thresh2)
+        preprocessed_versions.append(path2)
+
+        gray3 = cv2.GaussianBlur(gray, (3, 3), 0)
+        edges = cv2.Canny(gray3, 50, 150)
+        dilated_edges = cv2.dilate(edges, kernel, iterations=1)
+        path3 = f"{image_path}_prep_v3.png"
+        cv2.imwrite(path3, dilated_edges)
+        preprocessed_versions.append(path3)
+
+        return preprocessed_versions
+    except Exception as e:
+        print(f"Error preprocessing image: {str(e)}")
+        return None
+
+def extract_handwritten_text(image_path):
+    try:
+        preprocessed_paths = preprocess_image_for_handwriting(image_path)
+        if not preprocessed_paths:
+            return None
+
+        results = []
+
+        for i, prep_path in enumerate(preprocessed_paths):
+            if i == 0:
+                config = r'--oem 3 --psm 6 -l eng+handwritten'
+            elif i == 1:
+                config = r'--oem 3 --psm 6 -l eng+equ'
+            else:
+                config = r'--oem 3 --psm 4 -l eng+equ+handwritten'
+
+            text = pytesseract.image_to_string(
+                Image.open(prep_path),
+                config=config
+            )
+            results.append(text.strip())
+
+        for path in preprocessed_paths:
+            if os.path.exists(path):
+                os.remove(path)
+
+        combined_text = post_process_extracted_text(results)
+        return combined_text
+    except Exception as e:
+        print(f"Error extracting handwritten text: {str(e)}")
+        return None
+
+def post_process_extracted_text(text_versions):
+    if not text_versions:
+        return None
+
+    longest_text = max(text_versions, key=len)
+    final_text = longest_text
+
+    symbol_corrections = {
+        '~': '∪',
+        '\\': '∩',
+        '>': '⟩',
+        '<': '⟨',
+        '2': 'λ',
+        '->': '→',
+        '=>': '⇒',
+        '--': '⟶',
+        '(': '{',
+        ')': '}',
+        '|': '∈',
+        '#': '≠',
+        '?': 'λ',
+    }
+
+    for incorrect, correct in symbol_corrections.items():
+        if incorrect in final_text and ('=' in final_text or '{' in final_text or '}' in final_text):
+            final_text = final_text.replace(incorrect, correct)
+
+    if 'sigma' in final_text.lower() or 'sigma*' in final_text.lower():
+        final_text = final_text.replace('sigma', 'Σ').replace('Sigma', 'Σ')
+
+    if ('lambda' in final_text.lower() or 'empty' in final_text.lower() or
+            '4' in final_text and '{4' in final_text):
+        final_text = final_text.replace('lambda', 'λ').replace('Lambda', 'λ').replace('{4', '{λ')
+
+    return final_text
 
 def perform_ocr(frame, timestamp):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -52,8 +169,6 @@ def detect_and_save_images(frame, timestamp):
                 if not os.path.exists(IMAGE_OUTPUT_DIR):
                     os.makedirs(IMAGE_OUTPUT_DIR)
                 filename = f"{IMAGE_OUTPUT_DIR}/image_{timestamp.replace(':', '-')}_{len(image_filenames)}.png"
-
-                # --- ADDED ERROR HANDLING ---
                 try:
                     success = cv2.imwrite(filename, roi)
                     if success:
@@ -62,8 +177,6 @@ def detect_and_save_images(frame, timestamp):
                         print(f"ERROR: Failed to write image file: {filename}")
                 except Exception as e:
                     print(f"ERROR: Exception while writing image file: {filename} - {e}")
-                # --- END ADDED ERROR HANDLING ---
-
     return image_filenames
 
 def is_likely_image(roi):
@@ -77,7 +190,7 @@ def process_frame(frame, current_time):
     image_filenames = []
     if filter_text(text):
         image_filenames = detect_and_save_images(frame, timestamp)
-    return text, timestamp, image_filenames
+    return text, timestamp, image_filenames, frame
 
 def text_similarity(text1, text2):
     vectorizer = TfidfVectorizer().fit_transform([text1, text2])
@@ -95,6 +208,22 @@ def image_similarity(img1_path, img2_path):
     similarity = cv2.matchTemplate(img1, img2, cv2.TM_CCOEFF_NORMED)
     return np.max(similarity)
 
+def calculate_image_change(prev_frame, current_frame):
+    if prev_frame is None or current_frame is None:
+        return 1.0
+
+    prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+    current_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
+
+    if prev_gray.shape != current_gray.shape:
+        current_resized = cv2.resize(current_gray, (prev_gray.shape[1], prev_gray.shape[0]))
+        diff = cv2.absdiff(prev_gray, current_resized)
+    else:
+        diff = cv2.absdiff(prev_gray, current_gray)
+
+    normalized_diff = np.sum(diff) / (prev_gray.shape[0] * prev_gray.shape[1] * 255)
+    return normalized_diff
+
 def describe_image(image_path):
     try:
         img = cv2.imread(image_path)
@@ -103,15 +232,36 @@ def describe_image(image_path):
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         ocr_text = pytesseract.image_to_string(gray)
+
+        math_symbols = ['Σ', 'λ', '∪', '∩', '∈', '→', '⇒', '{', '}', '*', '=']
+        math_words = ['set', 'function', 'operation', 'theorem', 'proof', 'algorithm', 'lambda', 'sigma']
+
+        is_math_content = False
+        for symbol in math_symbols:
+            if symbol in ocr_text:
+                is_math_content = True
+                break
+
+        if not is_math_content:
+            for word in math_words:
+                if word.lower() in ocr_text.lower():
+                    is_math_content = True
+                    break
+
         height, width = img.shape[:2]
         brightness = np.mean(gray)
         contrast = np.std(gray)
         edges = cv2.Canny(gray, 100, 200)
         edge_density = np.sum(edges > 0) / (height * width)
 
-        image_type = "text-heavy" if len(ocr_text.strip()) > 100 else \
-                    "diagram" if edge_density > 0.1 else \
-                    "photo"
+        if is_math_content:
+            image_type = "mathematical notation"
+        elif len(ocr_text.strip()) > 100:
+            image_type = "text-heavy"
+        elif edge_density > 0.1:
+            image_type = "diagram"
+        else:
+            image_type = "photo"
 
         description = f"""Image Description:
         - Type: {image_type}
@@ -119,75 +269,73 @@ def describe_image(image_path):
         - Content: {ocr_text.strip() if ocr_text.strip() else 'No text detected'}
         - Visual characteristics: {'High contrast with detailed edges' if edge_density > 0.1 else 'Smooth transitions with natural appearance'}
         """
+
+        if is_math_content:
+            description += "\n- Contains mathematical notation or formulas"
+
         return description
     except Exception as e:
         print(f"Error describing image {image_path}: {str(e)}")
         return f"[Error analyzing image: {image_path}]"
 
-def get_groq_explanation(extracted_content):
+def get_gemini_explanation(extracted_content):
     try:
-        print(f"DEBUG: extracted_content in get_groq_explanation: {extracted_content}")  # Add this
+        print("DEBUG: Inside get_gemini_explanation")
+        contents = []
 
-        formatted_content = ""
         for text, timestamp, image_filenames in extracted_content:
-            formatted_content += f"\n=== Timestamp: {timestamp} ===\n"
-            formatted_content += f"Text Content:\n{text}\n"
+            text_part = f"=== Timestamp: {timestamp} ===\nExtracted Text:\n{text}\n"
+            contents.append(text_part)
 
-            if image_filenames:
-                formatted_content += "\nVisual Content:\n"
-                for img_file in image_filenames:
-                    image_desc = describe_image(img_file)
-                    formatted_content += f"{image_desc}\n"
+            for img_file in image_filenames:
+                try:
+                    with open(img_file, "rb") as image_file:
+                        image_data = image_file.read()
+                        base64_image = base64.b64encode(image_data).decode("utf-8")
+                        mime_type = "image/png"
+                        image_part = {
+                            "mime_type": mime_type,
+                            "data": base64_image
+                        }
+                        contents.append(image_part)
 
-            formatted_content += "\n" + "="*50 + "\n"
+                except Exception as e:
+                    print(f"Error reading image {img_file}: {e}")
 
-        client = Groq(api_key="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") # Replace with your Groq API key
-        #TEMPORARY PROMPT
-        prompt = """Analyze the following lecture content, including both text and visual elements. Please provide:
+        prompt_text = """Analyze the lecture content, including text and images.
+        Note that the OCR-extracted text may not include handwritten text, so you must carefully examine the images for any handwritten notes or mathematical expressions.
+        Explain the key concepts, interpret any handwritten text or mathematical notation from the images,
+        and describe how the images relate to the text. Provide a summary and any real-world applications."""
 
-        1. Comprehensive Analysis:
-           - Main concepts or each point explained in detail
-           - Integration of visual elements with textual content
-           - Technical terminology explained
-        
-        2. Visual Content Analysis:
-           - How the images support the lecture content
-           - Key visual elements and their significance
-           - Relationship between text and visual aids
-           -Also identify the different images in that image if any
-        
-        3. Summary and Practical Applications:
-           - Key takeaways
-           - Real-world applications
-           - Learning objectives achieved
-        5.Alternate explanation of the slides.
-        4.If you find any numerical in the text provided by me also solve that numerical
-        Lecture Content:
-        5. If you find any educational diagram like nfa or dfa and you feel that its construction and working is important for the students to understand for the exam, please explain both with the help of a diagram.
-        {formatted_content}
+        if gemini_model:
+            if GENAI_MODEL_NAME == "gemini-1.5-flash":
+                gemini_response = gemini_model.generate_content(
+                    contents=[prompt_text] + contents,
+                )
+            else:
+                gemini_response = gemini_model.generate_content(
+                    prompt_text + "\n" + str(contents)
+                )
 
-        Please structure your response with clear sections and subsections, relating the visual elements to the concepts discussed.""" + formatted_content[:500]
-        # prompt = f"""Analyze the following lecture content... (rest of your prompt) ..."""  # Your Groq prompt
+            if gemini_response.text:
+                return gemini_response.text
+            else:
+                return "No explanation available from Gemini."
+        else:
+            return "Gemini API is not configured. Please check your API key and network connection."
 
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            model="llama3-8b-8192",
-        )
-        print(f"DEBUG: Groq response: {chat_completion.choices[0].message.content}") # Add this
-        return chat_completion.choices[0].message.content
     except Exception as e:
-        print(f"Error getting Groq explanation: {str(e)}")
-        return None
+        print(f"Error getting Gemini explanation: {str(e)}")
+        return f"Error: {str(e)}"
 
-def create_enhanced_document(extracted_content, groq_explanation):
+def create_enhanced_document(extracted_content, gemini_explanation):
     doc = Document()
     doc.add_heading('Lecture Analysis Report', 0)
     doc.add_paragraph(f"Generated on: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    math_note = doc.add_paragraph()
+    math_note.add_run("Note: Mathematical symbols and notation are best viewed in the original images.").bold = True
+
     doc.add_heading('Original Lecture Content', 1)
     for text, timestamp, image_filenames in extracted_content:
         doc.add_heading(f"Timestamp: {timestamp}", 2)
@@ -197,33 +345,36 @@ def create_enhanced_document(extracted_content, groq_explanation):
             for image_filename in image_filenames:
                 try:
                     doc.add_picture(image_filename, width=Inches(6))
+                    handwritten_text = extract_handwritten_text(image_filename)
+                    if handwritten_text:
+                        p = doc.add_paragraph("Extracted Text: ")
+                        p.add_run(handwritten_text)
                     desc = describe_image(image_filename)
                     doc.add_paragraph(desc, style='Caption')
                 except Exception as e:
                     print(f"Error adding image to document: {e}")
                     doc.add_paragraph(f"[Error: Could not add image {image_filename}]")
         doc.add_paragraph()
-    print(f"DEBUG: groq_explanation in create_enhanced_document: {groq_explanation}")  # Add this
-    if groq_explanation:
+
+    if gemini_explanation:
         doc.add_heading('Comprehensive Analysis', 1)
-        doc.add_paragraph(groq_explanation)
+        doc.add_paragraph(gemini_explanation)
 
     doc.add_heading('Technical Appendix', 1)
     doc.add_paragraph(f"""
     Processing Details:
     - Content Extraction Interval: Dynamically calculated
     - Number of Images Processed: {sum(len(img) for _, _, img in extracted_content)}
-    - Analysis Model: llama3-8b-8192
+    - Analysis Model: {GENAI_MODEL_NAME}
+    - Text Extraction: Enhanced OCR with mathematical symbol detection
     """)
     return doc
-
 
 @app.route('/analyze_video', methods=['POST'])
 def analyze_video():
     temp_video_path = None
-    temp_docx_path = None  # Initialize temp_docx_path as well
+
     try:
-        # ... (rest of your input handling and video loading) ...
         if 'video' not in request.files:
             return jsonify({'error': 'No video file provided'}), 400
         if not request.form.get('start_phrase') or not request.form.get('end_phrase'):
@@ -242,11 +393,15 @@ def analyze_video():
         cap = cv2.VideoCapture(temp_video_path)
         if not cap.isOpened():
             return jsonify({'error': 'Could not open video file'}), 500
+
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = cap.get(cv2.CAP_PROP_FPS)
         video_duration_seconds = frame_count / fps
-        dynamic_interval_seconds = min(video_duration_seconds / 100, 3 * 60)
-        frame_interval = int(fps * dynamic_interval_seconds)
+
+        initial_interval_seconds = min(3 * 60, video_duration_seconds / 100)
+        initial_frame_interval = int(fps * initial_interval_seconds)
+        post_start_interval_seconds = initial_interval_seconds / 3
+        post_start_frame_interval = int(fps * post_start_interval_seconds)
 
         first_phrase_found = False
         second_phrase_found = False
@@ -255,19 +410,27 @@ def analyze_video():
         saved_images = []
         start_timestamp = None
         end_timestamp = None
+        previous_frame = None
+        previous_text = None
+        previous_images = []
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = []
-            for frame_number in range(0, frame_count, frame_interval):
+            current_frame_interval = initial_frame_interval
+
+            for frame_number in range(0, frame_count, current_frame_interval):
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-                ret, frame = cap.read()
+                ret, current_frame = cap.read()
                 if not ret:
                     break
                 current_time = frame_number / fps
-                futures.append(executor.submit(process_frame, frame, current_time))
+                futures.append(executor.submit(process_frame, current_frame.copy(), current_time))
+
+                if first_phrase_found and current_frame_interval != post_start_frame_interval:
+                    current_frame_interval = post_start_frame_interval
 
             for future in as_completed(futures):
-                text, timestamp, image_filenames = future.result()
+                text, timestamp, image_filenames, frame = future.result()
                 if text:
                     if not first_phrase_found:
                         if start_phrase in text:
@@ -276,37 +439,54 @@ def analyze_video():
                             current_text = text
                             extracted_content.append((text, timestamp, image_filenames))
                             saved_images.extend(image_filenames)
+                            previous_text = text
+                            previous_images = image_filenames
+                            previous_frame = frame.copy()
                     elif end_phrase in text:
                         second_phrase_found = True
                         end_timestamp = timestamp
                         extracted_content.append((text, timestamp, image_filenames))
                         saved_images.extend(image_filenames)
                         break
-                    elif first_phrase_found and text_similarity(current_text, text) < TEXT_SIMILARITY_THRESHOLD:
-                        current_text = text
-                        new_images = []
-                        for img in image_filenames:
-                            if not any(image_similarity(img, saved_img) > IMAGE_SIMILARITY_THRESHOLD for saved_img in saved_images):
-                                new_images.append(img)
-                        if new_images:
-                            extracted_content.append((text, timestamp, new_images))
-                            saved_images.extend(new_images)
-        cap.release()
+                    elif first_phrase_found:
+                        if previous_frame is not None:
+                            image_change = calculate_image_change(previous_frame, frame)
+                            text_similarity_score = text_similarity(previous_text, text) if previous_text and text else 0.0
+
+                            if image_change > MIN_CHANGE_THRESHOLD or text_similarity_score < (1 - MIN_CHANGE_THRESHOLD):
+                                extracted_content.append((text, timestamp, image_filenames))
+                                saved_images.extend(image_filenames)
+                                previous_text = text
+                                previous_images = image_filenames
+                                previous_frame = frame.copy()
+                        else:
+                            extracted_content.append((text, timestamp, image_filenames))
+                            saved_images.extend(image_filenames)
+                            previous_text = text
+                            previous_images = image_filenames
+                            previous_frame = frame.copy()
+
+            cap.release()
 
         if first_phrase_found and second_phrase_found:
             filtered_content = []
             for text, timestamp, image_filenames in extracted_content:
                 if start_timestamp <= timestamp <= end_timestamp:
                     filtered_content.append((text, timestamp, image_filenames))
-            print(f"DEBUG: filtered_content in analyze_video: {filtered_content}")
-            groq_explanation = get_groq_explanation(filtered_content)
-            doc = create_enhanced_document(filtered_content, groq_explanation)
-            temp_docx_path = "temp_lecture_analysis.docx"
-            doc.save(temp_docx_path)
 
-            # --- KEY CHANGE: Explicitly close the doc object ---
-            doc = None  # Release the object
-            # -------------
+            print(f"DEBUG: filtered_content before Gemini: {filtered_content}")
+            gemini_explanation = get_gemini_explanation(filtered_content)
+            print(f"DEBUG: gemini_explanation after Gemini call: {gemini_explanation}")
+            doc = create_enhanced_document(filtered_content, gemini_explanation)
+            temp_docx_path = "temp_lecture_analysis.docx"
+
+            with open(temp_docx_path, "wb") as f:
+                doc.save(f)
+
+            with open(temp_docx_path, "rb") as f:
+                docx_data = io.BytesIO(f.read())
+            os.remove(temp_docx_path)
+            temp_docx_path = None
 
             all_saved_images = set()
             for _, _, image_filenames_list in filtered_content:
@@ -319,46 +499,22 @@ def analyze_video():
                         os.remove(file_path)
                     except Exception as e:
                         print(f"Error removing unused image {file_path}: {str(e)}")
-
-            # --- Modified after_this_request ---
-            @after_this_request
-            def remove_files(response):
-                attempts = 0
-                max_attempts = 5  # Increased attempts
-                delay = 1.0      # Increased delay
-                while attempts < max_attempts:
-                    try:
-                        if temp_docx_path and os.path.exists(temp_docx_path):
-                            os.remove(temp_docx_path)
-                        if temp_video_path and os.path.exists(temp_video_path):
-                            os.remove(temp_video_path)
-                        return response  # Files deleted successfully
-                    except PermissionError:
-                        attempts += 1
-                        print(f"File deletion failed (attempt {attempts}). Retrying in {delay} seconds...")
-                        time.sleep(delay)
-                # If we reach here, deletion failed after all attempts
-                app.logger.error(f"Failed to delete temporary files after multiple attempts.")
-                return response
-            return send_file(temp_docx_path, as_attachment=True)
-
+            return send_file(docx_data,
+                             download_name="lecture_analysis.docx",
+                             as_attachment=True)
         else:
             return jsonify({'error': 'Start or end phrase not found in the video'}), 404
 
     except Exception as e:
+        print(f"An unexpected error occurred: {e}")
         return jsonify({'error': str(e)}), 500
+
     finally:
         if temp_video_path and os.path.exists(temp_video_path):
             try:
                 os.remove(temp_video_path)
             except Exception as e:
-                app.logger.error(f"Error removing temp_video_path in finally block: {e}")
-        # ---Crucially, also attempt to delete temp_docx_path in finally---
-        if temp_docx_path and os.path.exists(temp_docx_path):
-            try:
-                os.remove(temp_docx_path)
-            except Exception as e:
-                app.logger.error(f"Error removing temp_docx_path in finally block: {e}")
+                app.logger.error(f"Error removing temp_video_path: {e}")
 
 if __name__ == '__main__':
     app.run(debug=True)
