@@ -15,6 +15,7 @@ from flask_cors import CORS
 import io
 import base64
 import google.generativeai as genai
+from config import GEMINI_API_KEY, GENAI_MODEL_NAME
 
 app = Flask(__name__)
 CORS(app)
@@ -26,8 +27,6 @@ MAX_WORKERS = 4
 TEXT_SIMILARITY_THRESHOLD = 0.7
 IMAGE_SIMILARITY_THRESHOLD = 0.95
 MIN_CHANGE_THRESHOLD = 0.2  # Threshold for considering a change (adjust as needed)
-GEMINI_API_KEY = "AIzaSyBUFD5aq5YxDmWSmc3BTehjcdbRyb40tLo"  # Replace with your Gemini API key
-GENAI_MODEL_NAME = "gemini-1.5-flash"  # Updated model name
 
 try:
     genai.configure(api_key=GEMINI_API_KEY)
